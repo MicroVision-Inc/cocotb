@@ -239,6 +239,18 @@ GpiObjHdl *VpiImpl::create_gpi_obj_from_handle(vpiHandle new_hdl,
         case vpiGenScopeArray: {
             std::string hdl_name = vpi_get_str(vpiName, new_hdl);
 
+#ifdef VCS
+            /* VCS names an object inside a generate scope by its path relative
+             * to the enclosing module, i.e. "loop[0].inst" rather than "inst",
+             * so compare only the final component.  Without this every such
+             * object looks like a pseudo-region and is made a generate array,
+             * which cannot have its members looked up by name. */
+            std::size_t sep = hdl_name.rfind(".");
+            if (sep != std::string::npos) {
+                hdl_name = hdl_name.substr(sep + 1);
+            }
+#endif
+
             if (hdl_name != name) {
                 LOG_DEBUG("Found pseudo-region %s (hdl_name=%s but name=%s)",
                           fq_name.c_str(), hdl_name.c_str(), name.c_str());
@@ -448,6 +460,42 @@ GpiObjHdl *VpiImpl::native_check_create(int32_t index, GpiObjHdl *parent) {
         writable.push_back('\0');
 
         new_hdl = vpi_handle_by_name(&writable[0], NULL);
+
+#ifdef VCS
+        /* VCS provides no object for a generate scope, indexed or not, so this
+         * lookup fails just like the unindexed one in native_check_create(name,
+         * parent) above.  The contents of the scope are still reachable through
+         * it by name, i.e. "loop[0].inst" resolves even though "loop[0]" does
+         * not, so confirm the indexed scope exists by looking for a child named
+         * with that prefix.
+         *
+         * The pseudo-region is created as a region rather than through
+         * create_gpi_obj_from_handle(), which would see the parent's name and
+         * make it another generate array; members below it are looked up by
+         * name, not by index.
+         */
+        if (new_hdl == NULL) {
+            std::string prefix = parent->get_name() + idx + ".";
+            vpiHandle iter = vpi_iterate(vpiInternalScope, vpi_hdl);
+
+            if (iter != NULL) {
+                for (auto rgn = vpi_scan(iter); rgn != NULL;
+                     rgn = vpi_scan(iter)) {
+                    auto rgn_name = vpi_get_str(vpiName, rgn);
+                    if (rgn_name != NULL &&
+                        std::string(rgn_name).rfind(prefix, 0) == 0) {
+                        vpi_free_object(iter);
+
+                        GpiObjHdl *new_obj =
+                            new VpiObjHdl(this, vpi_hdl, GPI_MODULE);
+                        new_obj->initialise(parent->get_name() + idx,
+                                            parent->get_fullname() + idx);
+                        return new_obj;
+                    }
+                }
+            }
+        }
+#endif
     } else if (obj_type == GPI_REGISTER || obj_type == GPI_NET ||
                obj_type == GPI_ARRAY || obj_type == GPI_STRING) {
         new_hdl = vpi_handle_by_index(vpi_hdl, index);
