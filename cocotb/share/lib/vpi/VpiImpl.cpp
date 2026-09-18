@@ -346,6 +346,57 @@ GpiObjHdl *VpiImpl::native_check_create(const std::string &name,
 skip_iterate:
 #endif
 
+#ifdef VCS
+    /* VCS does not return a handle for the generate scope array itself, only
+     * for the indexed scopes, so the lookup above fails for a name without an
+     * index.  Unlike Icarus it does not report the generate scopes when
+     * iterating vpiInternalScope either -- it reports the objects inside them,
+     * typed vpiModule and named relative to the parent scope:
+     *     For Example:
+     *         genvar idx;
+     *         generate
+     *             for (idx = 0; idx < 5; idx = idx + 1) begin : loop
+     *                 some_module inst (...);
+     *             end
+     *         endgenerate
+     *
+     *     loop           => vpiGenScopeArray (not found)
+     *     loop[0].inst   => vpiModule
+     *     ...
+     *     loop[4].inst   => vpiModule
+     *
+     *     loop is not found directly, but if loop[n]... is found, loop must
+     *     exist, so create the pseudo-region object for it.
+     *
+     * Only the leading label is compared, so that a sibling merely sharing a
+     * prefix, i.e. loop_ctrl, does not match.
+     */
+    if (new_hdl == NULL) {
+        vpiHandle iter = vpi_iterate(vpiInternalScope, parent_hdl);
+
+        if (iter != NULL) {
+            for (auto rgn = vpi_scan(iter); rgn != NULL; rgn = vpi_scan(iter)) {
+                auto rgn_type = vpi_get(vpiType, rgn);
+                if (rgn_type != vpiGenScope && rgn_type != vpiModule) {
+                    continue;
+                }
+
+                auto rgn_name = vpi_get_str(vpiName, rgn);
+                if (rgn_name == NULL) {
+                    continue;
+                }
+
+                std::string rgn_label = rgn_name;
+                if (rgn_label.substr(0, rgn_label.find("[")) == name) {
+                    new_hdl = parent_hdl;
+                    vpi_free_object(iter);
+                    break;
+                }
+            }
+        }
+    }
+#endif
+
     if (new_hdl == NULL) {
         LOG_DEBUG("Unable to query vpi_get_handle_by_name %s", fq_name.c_str());
         return NULL;
